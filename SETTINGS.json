@@ -1,0 +1,12 @@
+{
+    "TRAIN_FOLDS_CSV_PATH": "../data/raw/train_folds.csv",
+    "TRAIN_CSV_PATH": "../data/raw/summaries_train.csv",
+    "TRAIN_PROMPT_CSV_PATH": "../data/raw/prompts_train.csv",
+    "TEST_CSV_PATH": "../data/raw/summaries_test.csv",
+    "SAMPLE_SUBMISSION_CSV_PATH": "../data/raw/sample_submission.csv",
+    "CURRENT_DATA_PSEUDOLABELS_DIR_PATH": "../data/current_pseudolabels/",
+    "PSEUDOLABELS_DIR_PATH": "../data/pseudolabels/",
+    "MODELS_DIR_PATH": "../models/",
+    "CONFIGS_DIR_PATH": "../config/",
+    "OOFS_DIR_PATH": "../data/oofs/"
+  }
