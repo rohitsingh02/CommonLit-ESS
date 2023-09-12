@@ -1,0 +1,9 @@
+student_id,prompt_id,text,summary_length,fixed_summary_text,splling_err_num,prompt_question,prompt_title,prompt_text,prompt_length,length_ratio,word_overlap_count,bigram_overlap_count,bigram_overlap_ratio,trigram_overlap_count,trigram_overlap_ratio,quotes_count
+000000ffffff,abc123,Example text 1,3,Example text 1,0,Summarize...,Example Title 1,"Heading
+Text...",3,1.0,0,0,0.0,0,0.0,0
+111111eeeeee,def789,Example text 2,3,Example text 2,0,Summarize...,Example Title 2,"Heading
+Text...",3,1.0,0,0,0.0,0,0.0,0
+222222cccccc,abc123,Example text 3,3,Example text 3,0,Summarize...,Example Title 1,"Heading
+Text...",3,1.0,0,0,0.0,0,0.0,0
+333333dddddd,def789,Example text 4,3,Example text 4,0,Summarize...,Example Title 2,"Heading
+Text...",3,1.0,0,0,0.0,0,0.0,0
