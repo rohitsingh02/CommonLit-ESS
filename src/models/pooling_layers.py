@@ -143,6 +143,25 @@ class AttentionPooling(nn.Module):
         v_temp = torch.matmul(v.unsqueeze(1), h).transpose(-2, -1)
         v = torch.matmul(self.w_h.transpose(1, 0), v_temp).squeeze(2)
         return v
+    
+
+class AttentionHead(nn.Module):
+    def __init__(self, in_features, hidden_dim):
+        super().__init__()
+        self.in_features = in_features
+        self.middle_features = hidden_dim
+        self.W = nn.Linear(in_features, hidden_dim)
+        self.V = nn.Linear(hidden_dim, 1)
+        self.out_features = hidden_dim
+
+    def forward(self, features,attention_mask):
+        weights_mask = attention_mask.unsqueeze(-1)
+        att = torch.tanh(self.W(features))
+        score = self.V(att)
+        score[attention_mask==0]=-1e4
+        attention_weights = torch.softmax(score, dim=1)
+        context_vector = torch.sum(attention_weights*weights_mask*features, dim=1)
+        return context_vector
 
 
 class WKPooling(nn.Module):
@@ -267,21 +286,21 @@ class GeMText(nn.Module):
         return ret
 
 
-# class GeMText(nn.Module):
-#     def __init__(self, dim=1, cfg=None, p=3, eps=1e-6):
-#         super(GeMText, self).__init__()
-#         self.dim = dim
-#         self.p = Parameter(torch.ones(1) * p)
-#         self.eps = eps
-#         self.feat_mult = 1
-#         # x seeems last hidden state
 
-#     def forward(self, x, attention_mask, input_ids, cfg):
-#         attention_mask_expanded = attention_mask.unsqueeze(-1).expand(x.shape)
-#         x = (x.clamp(min=self.eps) * attention_mask_expanded).pow(self.p).sum(self.dim)
-#         ret = x / attention_mask_expanded.sum(self.dim).clip(min=self.eps)
-#         ret = ret.pow(1 / self.p)
-#         return ret
+class GeMText(nn.Module):
+    def __init__(self, dim=1, p=3, eps=1e-6):
+        super(GeMText, self).__init__()
+        self.dim = dim
+        self.p = Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x, attention_mask):
+        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(x.shape)
+        x = ((x.clamp(min=self.eps) * attention_mask_expanded).pow(self.p)).sum(self.dim)
+        ret = (x/(attention_mask_expanded.sum(self.dim))).clip(min=self.eps)
+        ret = ret.pow(1/self.p)
+        return ret
+
 
 
 def get_pooling_layer(config, backbone_config):

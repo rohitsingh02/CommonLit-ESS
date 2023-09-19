@@ -37,7 +37,10 @@ def update_old_state(state):
 
 def get_model(config, backbone_config_path=None, model_checkpoint_path=None, train=True):
     backbone_config = get_backbone_config(config) if backbone_config_path is None else torch.load(backbone_config_path)
+    # backbone_config.decoder_layers = 0
     model = CustomModel(config, backbone_config=backbone_config)
+    # if model.backbone.decoder is not None:
+    #     model.backbone.decoder = torch.nn.Identity()
 
     if model_checkpoint_path is not None:
         state = torch.load(model_checkpoint_path, map_location='cpu')
@@ -46,6 +49,7 @@ def get_model(config, backbone_config_path=None, model_checkpoint_path=None, tra
         model.load_state_dict(state['model'])
         print("------All Keys matched-------")
 
+    print(model)
     if config.architecture.gradient_checkpointing:
         if model.backbone.supports_gradient_checkpointing:
             model.backbone.gradient_checkpointing_enable()
@@ -56,7 +60,7 @@ def get_model(config, backbone_config_path=None, model_checkpoint_path=None, tra
         if config.architecture.freeze_embeddings:
             freeze(model.backbone.embeddings)
         if config.architecture.freeze_n_layers > 0:
-            freeze(model.backbone.encoder.layer[:config.model.freeze_n_layers])
+            freeze(model.backbone.encoder.layer[:config.architecture.freeze_n_layers])
         if config.architecture.reinitialize_n_layers > 0:
             for module in model.backbone.encoder.layer[-config.architecture.reinitialize_n_layers:]:
                 model._init_weights(module)

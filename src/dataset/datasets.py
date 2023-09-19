@@ -4,41 +4,26 @@ from transformers import DataCollatorWithPadding
 
 
 class CommonlitDataset(Dataset):
-    def __init__(self, cfg, df, mode="train", pl_pipeline=False):
+    def __init__(self, cfg, df, mode="train"):
         self.cfg = cfg
         self.df = df
-        self.pl_pipeline = pl_pipeline
-        self.texts = self.df['text'].values
-        self.prompt_question = self.df['prompt_question'].values
-        self.prompt_title = self.df['prompt_title'].values
-        self.prompt_text = self.df['prompt_text'].values
-        
+        self.texts = self.df['input_text'].values
         self.mask_token = self.cfg.tokenizer.convert_tokens_to_ids(self.cfg.tokenizer.mask_token)
         self.sep_token = self.cfg.tokenizer.sep_token
-
         self.mode = mode
         self.labels = None
         if cfg.dataset.target_cols[0] in df.columns and self.mode != "test":
             self.labels = df[cfg.dataset.target_cols].values
 
+        if hasattr(self.cfg.dataset, "use_pseudo_targets") and self.mode == "train":
+            self.labels_pseudo = df[['content_pred', 'wording_pred']].values
+
     def __len__(self):
         return len(self.texts)
 
     def __getitem__(self, item):
-        text = ""
-        if self.cfg.dataset.use_summary_text: 
-            text =  self.texts[item]
-            
-        if self.cfg.dataset.use_prompt_title: 
-            text += self.sep_token + self.prompt_title[item]
-            
-        if self.cfg.dataset.use_prompt_question: 
-            text += self.sep_token + self.prompt_question[item]
-            
-        if self.cfg.dataset.use_prompt_text: 
-            text += self.sep_token + self.prompt_text[item]
-            
-            
+
+        text = self.texts[item]   
         inputs = self.cfg.tokenizer.encode_plus(
             text,
             return_tensors=None,
@@ -52,17 +37,27 @@ class CommonlitDataset(Dataset):
         for k, v in inputs.items():
             inputs[k] = torch.tensor(v, dtype=torch.long)
             
-        if self.pl_pipeline and self.labels is not None:
-            inputs["labels"] = torch.tensor(self.labels[item], dtype=torch.float)
-            inputs["length"] = len(inputs["input_ids"])
-            
             
         if  self.cfg.training.mask_ratio > 0 and self.mode == "train":
             ix = torch.rand(size=(len(inputs["input_ids"]),)) < self.cfg.training.mask_ratio # 0.25
             inputs["input_ids"][ix] = self.mask_token
             
-        if not self.pl_pipeline and self.labels is not None:
-            label = torch.tensor(self.labels[item], dtype=torch.float)
+        
+        if self.labels is not None:
+            if hasattr(self.cfg.dataset, "use_pseudo_targets") and self.mode == "train":
+                label_tmp = self.labels_pseudo[item]
+                label_original = self.labels_pseudo[item]
+                if self.cfg.dataset.use_pseudo_targets.type == "pseudo":
+                    label = torch.tensor(label_tmp, dtype=torch.float)
+                elif self.cfg.dataset.use_pseudo_targets.type == "mean":
+                    label = (label_original + label_tmp) / 2
+                    label = torch.tensor(label, dtype=torch.float)
+                elif self.cfg.dataset.use_pseudo_targets.type == "mean_diff":
+                    label = label_original - ((label_original + label_tmp) / 2)
+                    label = torch.tensor(label, dtype=torch.float)
+                label = torch.tensor(label, dtype=torch.float)
+            else:
+                label = torch.tensor(self.labels[item], dtype=torch.float)
             return inputs, label
         return inputs
 

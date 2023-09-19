@@ -41,6 +41,8 @@ from utils import AverageMeter, time_since, get_evaluation_steps
 from utils import time_since
 from criterion.score import get_score, get_score_single
 from data.preprocessing import Preprocessor, make_folds, get_max_len_from_df, get_additional_special_tokens, preprocess_text, add_prompt_info
+from data.preprocessing import get_input_cols, get_input_text
+
 from dataset.datasets import get_train_dataloader, get_valid_dataloader
 from dataset.collators import collate
 from models.utils import get_model
@@ -52,7 +54,7 @@ from criterion.criterion import get_criterion
 from datetime import datetime
 torch.multiprocessing.set_sharing_strategy("file_system")
 
-
+tqdm.pandas()
 
 
 def parse_args():
@@ -82,16 +84,6 @@ def seed_everything(seed=42):
 #     preds = oof_df[[f"pred_{c}" for c in utils.target_cols]].values
 #     score, scores = utils.get_score(labels, preds)
 #     cfg.logger.info(f'Score: {score:<.4f}  Scores: {scores}')
-
-
-# def check_arguments():
-#     all_folds = [i for i in range(config.general.n_folds)]
-#     assert args.fold in all_folds, \
-#         f'Invalid training fold, fold number must be in {all_folds}'
-
-#     if config.general.use_current_data_pseudo_labels and config.general.use_current_data_true_labels:
-#         logger.warning('Both use_current_data_pseudo_labels and use_current_data_true_labels are True. ')
-
 
 def check_arguments():
     all_folds = [i for i in range(config.dataset.n_folds)]
@@ -188,12 +180,7 @@ def valid_fn(valid_loader, model, criterion, epoch, ema):
                 y_preds = model(inputs)
             loss = criterion(y_preds, labels)
           
-        # if hasattr(config.training, "ema"):
-        #     with ema.average_parameters():
-        #         y_preds = model(inputs)
-        #         loss = criterion(y_preds, labels)
-            
-            
+
         if config.training.gradient_accumulation_steps > 1:
             loss = loss / config.training.gradient_accumulation_steps
                
@@ -282,9 +269,7 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                     # print(labels)
                     
                     # labels[:,start:start+rand_len]=labels[perm,start:start+rand_len]
-                
-            # exit()
-                
+                                
             with torch.cuda.amp.autocast(enabled=config.training.apex):
                 y_preds = model(inputs)
                 loss = criterion(y_preds, labels)
@@ -369,8 +354,8 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
 
             bar.set_postfix({'train_loss': train_losses.avg}) 
         
-        if epoch >= 6:
-            break
+        # if epoch >= 6:
+        #     break
         
         valid_losses, predictions = valid_fn(valid_dataloader, model, criterion, epoch, ema)
         
@@ -378,7 +363,6 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
             score, scores = get_score(valid_labels, predictions)
         else:
             score, scores = get_score_single(valid_labels, predictions)
-        
         
         model.train()
         logger.info(f'Epoch {epoch+1} - Score: {score:.4f}  Scores: {scores}')
@@ -394,8 +378,6 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                 f'Epoch {epoch + 1} - Score: {score:.4f}  Scores: {scores}\n'
                 '=============================================================================\n') 
         
-        
-           
         
     predictions = torch.load(filepaths['model_fn_path'], map_location=torch.device('cpu'))['predictions']
     valid_folds[[f"pred_{c}" for c in config.dataset.target_cols]] = predictions   
@@ -416,36 +398,45 @@ def main():
     #     on='prompt_id'
     # ).reset_index(drop=True)
     
-    # train = make_folds(train,
-    #         target_cols=config.general.target_columns,
-    #         n_splits=config.general.n_folds,
-    # )
+    train = make_folds(train,
+            target_cols=config.dataset.target_cols,
+            n_splits=config.dataset.n_folds,
+    )
     # train.to_csv("train_folds.csv", index=False)
     
     ### new code to test model_performance  
     if not os.path.exists("../data/raw/train_folds_processed.csv"):
-        preprocessor = Preprocessor(model_name=config.model.backbone_type)
+        preprocessor = Preprocessor(model_name=config.architecture.model_name)
         train = preprocessor.run(train_prompt, train, mode="train")
         train.to_csv("../data/raw/train_folds_processed.csv", index=False)
     else:
         train = pd.read_csv("../data/raw/train_folds_processed.csv")
     
-    # print(train.columns)
-    # exit()     
+
+    if hasattr(config.dataset, "use_pseudo_targets"):
+        if config.dataset.use_pseudo_targets.version == "v1":
+            df_pseudo = pd.read_csv("../data/raw/pseudo1.csv")
+        elif config.dataset.use_pseudo_targets.version == "v2":
+            df_pseudo = pd.read_csv("../data/raw/pseudo2.csv")
+
+        df_pseudo = df_pseudo[['student_id', 'content_pred', 'wording_pred']].reset_index(drop=True)
+        train = train.merge(
+            df_pseudo, 
+            on='student_id'
+        ).reset_index(drop=True)
+
     
-    if hasattr(config.dataset, "use_spell_checker") and config.dataset.use_spell_checker:
-        train['text'] = train['fixed_summary_text']
-    
-    train['text'] = train['text'].apply(preprocess_text)
     if hasattr(config.dataset, "preprocess_all") and config.dataset.preprocess_all:
-        train['prompt_question'] = train['prompt_question'].apply(preprocess_text)
-        train['prompt_title'] = train['prompt_title'].apply(preprocess_text)
-        train['prompt_text'] = train['prompt_text'].apply(preprocess_text)
-    # train['text'] = train.apply(lambda x: add_prompt_info(x), axis=1)
-    # print(train['text'].values[0])
+        train['text'] = train['text'].apply(lambda x: preprocess_text(x, config, type="summary"))
+        train['prompt_question'] = train['prompt_question'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+        train['prompt_title'] = train['prompt_title'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+        train['prompt_text'] = train['prompt_text'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+
+
+
+
     special_tokens_replacement = get_additional_special_tokens()
     all_special_tokens = list(special_tokens_replacement.values())
-    # print(all_special_tokens)
     
     tokenizer = AutoTokenizer.from_pretrained(
         config.architecture.model_name,
@@ -455,6 +446,11 @@ def main():
     tokenizer.save_pretrained(filepaths['tokenizer_dir_path'])
     config.tokenizer = tokenizer
     
+    input_cols =  get_input_cols(config=config)
+    train['input_text'] = train.progress_apply(lambda x: get_input_text(x, input_cols, config), axis=1)
+
+
+
     train_df = pd.DataFrame(columns=train.columns)
     valid_df = train[train['fold'] == fold].reset_index(drop=True)
     if config.dataset.use_current_data_true_labels:
@@ -470,7 +466,7 @@ def main():
 
     if config.dataset.set_max_length_from_data:
         logger.info('Setting max length from data')
-        config.dataset.max_length = get_max_len_from_df(train_df, tokenizer)
+        config.dataset.max_length = get_max_len_from_df(train_df, tokenizer, config)
         
     logger.info(f"Max tokenized sequence len: {config.dataset.max_length}")
     logger.info(f"==================== fold: {fold} training ====================")
@@ -496,7 +492,6 @@ if __name__ == "__main__":
     #     run = init_wandb()
         
     filepaths = update_filepaths(filepaths, config, args.run_id, fold)  
-    
     create_dirs_if_not_exists(filepaths)
     if not os.path.exists(filepaths['run_dir_path']):
         os.makedirs(filepaths['run_dir_path'])

@@ -17,7 +17,7 @@ class CustomModel(nn.Module):
             self.backbone = AutoModel.from_config(self.backbone_config)
 
         self.backbone.resize_token_embeddings(len(cfg.tokenizer))
-        
+
         if hasattr(self.cfg.training, "multi_dropout") and self.cfg.training.multi_dropout:
             self.dropout = nn.Dropout(self.backbone_config.hidden_dropout_prob)
             self.dropout1 = nn.Dropout(0.1)

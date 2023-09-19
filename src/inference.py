@@ -11,6 +11,8 @@ import torch
 from transformers import AutoTokenizer
 from dataset.datasets import get_test_dataloader
 from data.preprocessing import Preprocessor, get_max_len_from_df, make_folds, preprocess_text
+from data.preprocessing import get_input_cols, get_input_text
+
 from utils import get_config, load_filepaths
 from models.utils import get_model
 from dataset.collators import collate
@@ -38,20 +40,6 @@ def seed_everything(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-
-
-
-# def inference_fn(data_loader, model):
-#     model.to(config.device)
-#     model.eval()    
-#     preds = []
-#     for batch in tqdm(data_loader):
-#         with torch.no_grad():
-#             inputs = {key:val.reshape(val.shape[0], -1).to(config.device) for key,val in batch.items()}
-#             outputs = model(input_ids = inputs['input_ids'], attention_mask = inputs['attention_mask'],train=False)
-#         preds.extend(outputs.detach().cpu().numpy())
-#     predictions = np.vstack(preds)
-#     return predictions
 
 
 
@@ -124,6 +112,8 @@ if __name__ == '__main__':
         test_df = test_df.sample(50, random_state=42)
 
 
+
+
     ### new code to test model_performance  
     # if not os.path.exists("../data/raw/train_folds_processed.csv"):
     #     train_prompt = pd.read_csv(filepaths['TRAIN_PROMPT_CSV_PATH'])
@@ -137,24 +127,34 @@ if __name__ == '__main__':
         on='prompt_id'
     ).reset_index(drop=True)
     
-    if hasattr(config.dataset, "use_spell_checker") and config.dataset.use_spell_checker:
-        test_df = pd.read_csv("../data/raw/train_folds_processed.csv")
-        test_df['text'] = test_df['fixed_summary_text']
+    test_df = pd.read_csv("../data/raw/train_folds_processed.csv")
+
+    input_cols =  get_input_cols(config=config)
+    test_df['input_text'] = test_df.progress_apply(lambda x: get_input_text(x, input_cols, config), axis=1)
+
+
         
-    test_df['text'] = test_df['text'].apply(preprocess_text)
+    # test_df['text'] = test_df['text'].apply(preprocess_text)
+    
+    # if hasattr(config.dataset, "preprocess_all") and config.dataset.preprocess_all:
+    #     test_df['prompt_question'] = test_df['prompt_question'].apply(preprocess_text)
+    #     test_df['prompt_title'] = test_df['prompt_title'].apply(preprocess_text)
+    #     test_df['prompt_text'] = test_df['prompt_text'].apply(preprocess_text)
     
     if hasattr(config.dataset, "preprocess_all") and config.dataset.preprocess_all:
-        test_df['prompt_question'] = test_df['prompt_question'].apply(preprocess_text)
-        test_df['prompt_title'] = test_df['prompt_title'].apply(preprocess_text)
-        test_df['prompt_text'] = test_df['prompt_text'].apply(preprocess_text)
+        test_df['text'] = test_df['text'].apply(lambda x: preprocess_text(x, config, type="summary"))
+        test_df['prompt_question'] = test_df['prompt_question'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+        test_df['prompt_title'] = test_df['prompt_title'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+        test_df['prompt_text'] = test_df['prompt_text'].apply(lambda x: preprocess_text(x, config, type="prompt"))
+
+
     
     
-    
-    test_df['tokenize_length'] = [len(config.tokenizer(text)['input_ids']) for text in test_df['text'].values]
+    test_df['tokenize_length'] = [len(config.tokenizer(text)['input_ids']) for text in test_df['input_text'].values]
     test_df = test_df.sort_values('tokenize_length', ascending=True).reset_index(drop=True)
 
     if config.dataset.set_max_length_from_data:
-        config.dataset.max_length = get_max_len_from_df(test_df, config.tokenizer)
+        config.dataset.max_length = get_max_len_from_df(test_df, config.tokenizer, config)
 
     if args.debug:
         test_df = test_df.sample(50, random_state=1)
@@ -165,6 +165,8 @@ if __name__ == '__main__':
     predictions = []
     oofs_list = []
     for fold in range(config.dataset.n_folds):
+        # if fold > 0:
+        #     continue
 
         subset = test_df.copy()
         if args.mode == 'oofs':

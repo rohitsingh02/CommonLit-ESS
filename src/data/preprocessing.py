@@ -146,34 +146,39 @@ contractions = {
 
 
 class Preprocessor:
-    def __init__(self, model_name: str,) -> None:
-        self.tokenizer = AutoTokenizer.from_pretrained(f"{model_name}") 
-        self.twd = TreebankWordDetokenizer() 
+    def __init__(self, 
+                model_name: str,
+                ) -> None:
+        self.tokenizer = AutoTokenizer.from_pretrained(f"{model_name}")
         self.STOP_WORDS = set(stopwords.words('english'))
         
-        self.spacy_ner_model = spacy.load('en_core_web_sm',) 
-        self.speller = Speller(lang='en') 
-        self.spellchecker = SpellChecker() 
+        self.spacy_ner_model = spacy.load('en_core_web_sm',)
+        self.speller = SpellChecker() #Speller(lang='en')
         
-    def word_overlap_count(self, row): 
+    def count_text_length(self, df: pd.DataFrame, col:str) -> pd.Series:
+        """ text length """
+        tokenizer=self.tokenizer
+        return df[col].progress_apply(lambda x: len(tokenizer.encode(x)))
+
+    def word_overlap_count(self, row):
         """ intersection(prompt_text, text) """        
         def check_is_stop_word(word):
             return word in self.STOP_WORDS
         
         prompt_words = row['prompt_tokens']
         summary_words = row['summary_tokens']
-        if self.STOP_WORDS: 
+        if self.STOP_WORDS:
             prompt_words = list(filter(check_is_stop_word, prompt_words))
             summary_words = list(filter(check_is_stop_word, summary_words))
         return len(set(prompt_words).intersection(set(summary_words)))
             
-    def ngrams(self, token, n): 
+    def ngrams(self, token, n):
         # Use the zip function to help us generate n-grams
         # Concatentate the tokens into ngrams and return
         ngrams = zip(*[token[i:] for i in range(n)])
         return [" ".join(ngram) for ngram in ngrams]
 
-    def ngram_co_occurrence(self, row, n: int) -> int: # 用于计算原始文本和摘要文本中 n-gram 共现的数量
+    def ngram_co_occurrence(self, row, n: int):
         # Tokenize the original text and summary into words
         original_tokens = row['prompt_tokens']
         summary_tokens = row['summary_tokens']
@@ -184,9 +189,15 @@ class Preprocessor:
 
         # Calculate the number of common n-grams
         common_ngrams = original_ngrams.intersection(summary_ngrams)
+
+        # # Optionally, you can get the frequency of common n-grams for a more nuanced analysis
+        # original_ngram_freq = Counter(ngrams(original_words, n))
+        # summary_ngram_freq = Counter(ngrams(summary_words, n))
+        # common_ngram_freq = {ngram: min(original_ngram_freq[ngram], summary_ngram_freq[ngram]) for ngram in common_ngrams}
+
         return len(common_ngrams)
     
-    def ner_overlap_count(self, row, mode:str): # 用于计算两个文本中命名实体（Named Entity）的交集数量。
+    def ner_overlap_count(self, row, mode:str):
         model = self.spacy_ner_model
         def clean_ners(ner_list):
             return set([(ner[0].lower(), ner[1]) for ner in ner_list])
@@ -215,27 +226,21 @@ class Preprocessor:
             return {key: ner_dict.get(key) for key in self.ner_keys}
 
     
-    def quotes_count(self, row): # 统计原始文本中出现在摘要文本中的引号的数量。这可以用来衡量原始文本和摘要文本之间的相似性
+    def quotes_count(self, row):
         summary = row['text']
         text = row['prompt_text']
-        quotes_from_summary = re.findall(r'"([^"]*)"', summary) # 获取摘要文本中提取出所有双引号之间的内容
-        if len(quotes_from_summary)>0: # 检查提取的引号内容，检查是否在原始文本中
+        quotes_from_summary = re.findall(r'"([^"]*)"', summary)
+        if len(quotes_from_summary)>0:
             return [quote in text for quote in quotes_from_summary].count(True)
         else:
             return 0
 
-    def spelling(self, text): # 用于检测文本中的拼写错误数量    
+    def spelling(self, text):
+        
         wordlist=text.split()
-        # 使用 PySpellChecker 库的 spellchecker 实例，检查单词列表中未知的（即不在词典中的）拼写错误的数量。
-        # unknown 方法返回未知的拼写错误单词列表，通过计算其长度来获得错误数量。
-        amount_miss = len(list(self.spellchecker.unknown(wordlist))) 
+        amount_miss = len(list(self.speller.unknown(wordlist)))
 
         return amount_miss
-    
-    def add_spelling_dictionary(self, tokens: List[str]) -> List[str]: # 将一个词汇列表添加到拼写检查的词典中，以便拼写检查器能够更准确地检查文本中的拼写错误。
-        """dictionary update for pyspell checker and autocorrect"""
-        self.spellchecker.word_frequency.load_words(tokens) 
-        self.speller.nlp_data.update({token:1000 for token in tokens})
     
     def run(self, 
             prompts: pd.DataFrame,
@@ -245,33 +250,27 @@ class Preprocessor:
         
         # before merge preprocess
         prompts["prompt_length"] = prompts["prompt_text"].apply(
-            lambda x: len(word_tokenize(x))
+            lambda x: len(self.tokenizer.encode(x))
         )
         prompts["prompt_tokens"] = prompts["prompt_text"].apply(
-            lambda x: word_tokenize(x)
+            lambda x: self.tokenizer.convert_ids_to_tokens(
+                self.tokenizer.encode(x), 
+                skip_special_tokens=True
+            )
         )
 
         summaries["summary_length"] = summaries["text"].apply(
-            lambda x: len(word_tokenize(x))
+            lambda x: len(self.tokenizer.encode(x))
         )
         summaries["summary_tokens"] = summaries["text"].apply(
-            lambda x: word_tokenize(x)
+            lambda x: self.tokenizer.convert_ids_to_tokens(
+                self.tokenizer.encode(x), 
+                skip_special_tokens=True
+            )
+
         )
-        
-        # Add prompt tokens into spelling checker dictionary
-        prompts["prompt_tokens"].apply(
-            lambda x: self.add_spelling_dictionary(x)
-        )
-        
-#         from IPython.core.debugger import Pdb; Pdb().set_trace()
-        # fix misspelling
-        summaries["fixed_summary_text"] = summaries["text"].progress_apply(
-            lambda x: self.speller(x)
-        )
-        
-        # count misspelling
         summaries["splling_err_num"] = summaries["text"].progress_apply(self.spelling)
-        
+
         # merge prompts and summaries
         input_df = summaries.merge(prompts, how="left", on="prompt_id")
 
@@ -282,16 +281,49 @@ class Preprocessor:
         input_df['bigram_overlap_count'] = input_df.progress_apply(
             self.ngram_co_occurrence,args=(2,), axis=1 
         )
-        input_df['bigram_overlap_ratio'] = input_df['bigram_overlap_count'] / (input_df['summary_length'] - 1)
-        
         input_df['trigram_overlap_count'] = input_df.progress_apply(
             self.ngram_co_occurrence, args=(3,), axis=1
         )
-        input_df['trigram_overlap_ratio'] = input_df['trigram_overlap_count'] / (input_df['summary_length'] - 2)
+        
+        # Crate dataframe with count of each category NERs overlap for all the summaries
         
         input_df['quotes_count'] = input_df.progress_apply(self.quotes_count, axis=1)
         
         return input_df.drop(columns=["summary_tokens", "prompt_tokens"])
+    
+
+
+# get input columns array for training
+def get_input_cols(config):
+    input_cols = []
+    if config.dataset.use_summary_text:
+        input_cols.append('text')
+
+    if config.dataset.use_prompt_title:
+        input_cols.append('prompt_question')
+
+    if config.dataset.use_prompt_question:
+        input_cols.append('prompt_title')
+
+    if config.dataset.use_prompt_text:
+        input_cols.append('prompt_text')
+
+    return input_cols
+
+
+### get input text ofr training
+def get_input_text(row, input_cols, config):
+    sep = " " + config.tokenizer.sep_token + " "        
+    text = sep.join(row[input_cols])
+    return text
+
+
+
+
+
+
+
+
 
 
 
@@ -308,6 +340,15 @@ def clean_summary(summary):
     # Remove extra spaces and newlines
     # clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()
     return summary
+
+
+def clean_prompts(text):
+    # Remove newline characters and extra spaces
+    cleaned_text = re.sub(r'\r\n', ' ', text)
+    cleaned_text = ' '.join(cleaned_text.split())
+    # Remove non-alphanumeric characters except spaces and periods
+    cleaned_text = re.sub(r'[^a-zA-Z0-9\s.]', '', cleaned_text)
+    return cleaned_text
 
 
 def replace_encoding_with_utf8(error: UnicodeError) -> Tuple[bytes, int]:
@@ -384,12 +425,24 @@ def add_prompt_info(row):
     return text    
 
 
-def preprocess_text(text):
+# def preprocess_text(text):
+#     text = clean_summary(text) # newly added
+#     # text = text.replace('\n', '|')
+#     text = resolve_encodings_and_normalize(text)
+#     text = replace_special_tokens(text)
+#     return text
+
+def preprocess_text(text, config, type="summary"):
     text = clean_summary(text) # newly added
+
+    if config.dataset.use_prompt_text and type == "prompt":
+        text = clean_prompts(text) 
+
     # text = text.replace('\n', '|')
     text = resolve_encodings_and_normalize(text)
     text = replace_special_tokens(text)
     return text
+
 
 
 def make_folds(df, target_cols, n_splits):
@@ -400,9 +453,43 @@ def make_folds(df, target_cols, n_splits):
     return df
 
 
-def get_max_len_from_df(df, tokenizer, n_special_tokens=3):
+
+
+def add_extra_text(df, config):
+    text = df.text
+    if config.dataset.use_prompt_title: 
+        text += "[SEP]" + df.prompt_title
+    if config.dataset.use_prompt_question: 
+        text += "[SEP]" + df.prompt_question
+    if config.dataset.use_prompt_text: 
+        prompt_sents = df.prompt_text.split(".")
+        if len(prompt_sents) > config.dataset.prompt_text_sent_count:
+            prompt_text = ". ".join(prompt_sents[:config.dataset.prompt_text_sent_count])
+        else:
+            prompt_text = df.prompt_text
+        text += "[SEP]" + prompt_text
+
+    text = text.strip()
+    return text
+
+
+# def get_max_len_from_df(df, tokenizer, config, n_special_tokens=3):
+#     tmp_df = df.copy()
+#     tmp_df['input_text'] = tmp_df.apply(lambda x: add_extra_text(x, config=config), axis=1)
+
+#     lengths = []
+#     tk0 = tqdm(tmp_df['text'].fillna("").values, total=len(df))
+#     for text in tk0:
+#         length = len(tokenizer(text, add_special_tokens=False)['input_ids'])
+#         lengths.append(length)
+#     max_length = max(lengths) + n_special_tokens
+#     return max_length
+
+
+
+def get_max_len_from_df(df, tokenizer, text_sent_count=5,  n_special_tokens=3):
     lengths = []
-    tk0 = tqdm(df['text'].fillna("").values, total=len(df))
+    tk0 = tqdm(df['input_text'].fillna("").values, total=len(df))
     for text in tk0:
         length = len(tokenizer(text, add_special_tokens=False)['input_ids'])
         lengths.append(length)
