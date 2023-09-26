@@ -1,4 +1,4 @@
-from .custom_model import CustomModel
+from .custom_model import CustomModel, CustomModel2
 import os
 import torch
 from transformers import AutoConfig
@@ -36,20 +36,23 @@ def update_old_state(state):
 
 
 def get_model(config, backbone_config_path=None, model_checkpoint_path=None, train=True):
+    print(backbone_config_path)
     backbone_config = get_backbone_config(config) if backbone_config_path is None else torch.load(backbone_config_path)
-    # backbone_config.decoder_layers = 0
-    model = CustomModel(config, backbone_config=backbone_config)
-    # if model.backbone.decoder is not None:
-    #     model.backbone.decoder = torch.nn.Identity()
+
+    if config.architecture.pooling_type == "CLS":
+        model = CustomModel2(config, backbone_config=backbone_config)
+    else:
+        model = CustomModel2(config, backbone_config=backbone_config)
 
     if model_checkpoint_path is not None:
-        state = torch.load(model_checkpoint_path, map_location='cpu')
-        if 'model.embeddings.position_ids' in state['model'].keys():
+        state = torch.load(model_checkpoint_path, map_location='cpu')['state_dict']
+        if 'model.embeddings.position_ids' in state.keys():
+            print("GONE WRONG")
             state = update_old_state(state)
-        model.load_state_dict(state['model'])
+        model.load_state_dict(state)
         print("------All Keys matched-------")
 
-    print(model)
+
     if config.architecture.gradient_checkpointing:
         if model.backbone.supports_gradient_checkpointing:
             model.backbone.gradient_checkpointing_enable()

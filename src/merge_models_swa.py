@@ -400,110 +400,92 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
 
 
 def main():
-    train = pd.read_csv(filepaths['TRAIN_FOLDS_CSV_PATH'])
-    train_prompt = pd.read_csv(filepaths['TRAIN_PROMPT_CSV_PATH'])
-    
-    # train = train.merge(
-    #     train_prompt, 
-    #     on='prompt_id'
-    # ).reset_index(drop=True)
-    
-    train = make_folds(train,
-            target_cols=config.dataset.target_cols,
-            n_splits=config.dataset.n_folds,
-    )
-    # train.to_csv("train_folds.csv", index=False)
-    
-    special_tokens_replacement = get_additional_special_tokens()
-    all_special_tokens = list(special_tokens_replacement.values())
-    
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.architecture.model_name,
-        use_fast=True,
-        additional_special_tokens=all_special_tokens
-    )
-    tokenizer.save_pretrained(filepaths['tokenizer_dir_path'])
-    config.tokenizer = tokenizer
-    
-    config.text_start_token = tokenizer.convert_tokens_to_ids("[SUMMARY_START]")
-    config.text_end_token = tokenizer.convert_tokens_to_ids("[SUMMARY_END]")
 
-    print(config.text_start_token, config.text_end_token)
+    fold_path = filepaths['run_dir_path'] + f"/fold{fold}"
+    average_checkpoints(fold_path, filepaths['model_fn_path'])
 
-
-
-    ### new code to test model_performance  
-    if not os.path.exists("../data/raw/train_folds_processed.csv"):
-        preprocessor = Preprocessor(tokenizer)
-        train = preprocessor.run(train_prompt, train, mode="train")
-        train.to_csv("../data/raw/train_folds_processed.csv", index=False)
-    else:
-        train = pd.read_csv("../data/raw/train_folds_processed.csv")
+    # train = pd.read_csv(filepaths['TRAIN_FOLDS_CSV_PATH'])
+    # train_prompt = pd.read_csv(filepaths['TRAIN_PROMPT_CSV_PATH'])
     
 
-    # if hasattr(config.dataset, "use_pseudo_targets"):
-    #     if config.dataset.use_pseudo_targets.version == "v1":
-    #         df_pseudo = pd.read_csv("../data/raw/pseudo_lgbm1.csv")
-    #     elif config.dataset.use_pseudo_targets.version == "v2":
-    #         df_pseudo = pd.read_csv("../data/raw/pseudo1.csv")
-
-    #     df_pseudo = df_pseudo[['student_id', 'content_pred', 'wording_pred']].reset_index(drop=True)
-    #     train = train.merge(
-    #         df_pseudo, 
-    #         on='student_id'
-    #     ).reset_index(drop=True)
-
-
-    if hasattr(config.dataset, "prompt_text_sent_end_count"):
-        train_prompt['prompt_text'] = train_prompt.apply(lambda x: split_prompt_text(config, x), axis=1)
-
-
-    # if hasattr(config.dataset, "preprocess_all") and config.dataset.preprocess_all:
-    #     train['text'] = train['text'].apply(lambda x: preprocess_text(x, config, type="summary"))
-    #     train['prompt_question'] = train['prompt_question'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-    #     train['prompt_title'] = train['prompt_title'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-    #     train['prompt_text'] = train['prompt_text'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-
-
-    if hasattr(config.dataset, "preprocess_cols"):
-        for col in config.dataset.preprocess_cols:
-            train[col] = train[col].apply(lambda x: preprocess_text(x))
-
-
-    if config.architecture.pooling_type == "CLS":
-        train['text'] = train.text.apply(lambda x: f"[SUMMARY_START]{x}[SUMMARY_END]")
-    # input_cols =  get_input_cols(config=config)
-
-    train['input_text'] = train.progress_apply(lambda x: get_input_text(x, config), axis=1)
-
-
-    train_df = pd.DataFrame(columns=train.columns)
-    valid_df = train[train['fold'] == fold].reset_index(drop=True)
-    if config.dataset.use_current_data_true_labels:
-        train_df = pd.concat([train_df, train[train['fold'] != fold].reset_index(drop=True)], axis=0)
+    # train = make_folds(train,
+    #         target_cols=config.dataset.target_cols,
+    #         n_splits=config.dataset.n_folds,
+    # )
+    # # train.to_csv("train_folds.csv", index=False)
     
-    if args.debug:
-        logger.info('Debug mode: using only 50 samples')
-        train_df = train_df.sample(n=50, random_state=config.general.seed).reset_index(drop=True)
-        valid_df = valid_df.sample(n=50, random_state=config.general.seed).reset_index(drop=True)
+    # special_tokens_replacement = get_additional_special_tokens()
+    # all_special_tokens = list(special_tokens_replacement.values())
+    
+    # tokenizer = AutoTokenizer.from_pretrained(
+    #     config.architecture.model_name,
+    #     use_fast=True,
+    #     additional_special_tokens=all_special_tokens
+    # )
+    # tokenizer.save_pretrained(filepaths['tokenizer_dir_path'])
+    # config.tokenizer = tokenizer
+    
+    # config.text_start_token = tokenizer.convert_tokens_to_ids("[SUMMARY_START]")
+    # config.text_end_token = tokenizer.convert_tokens_to_ids("[SUMMARY_END]")
+
+    # print(config.text_start_token, config.text_end_token)
+
+
+
+    # ### new code to test model_performance  
+    # if not os.path.exists("../data/raw/train_folds_processed.csv"):
+    #     preprocessor = Preprocessor(tokenizer)
+    #     train = preprocessor.run(train_prompt, train, mode="train")
+    #     train.to_csv("../data/raw/train_folds_processed.csv", index=False)
+    # else:
+    #     train = pd.read_csv("../data/raw/train_folds_processed.csv")
+    
+
+
+    # if hasattr(config.dataset, "prompt_text_sent_end_count"):
+    #     train_prompt['prompt_text'] = train_prompt.apply(lambda x: split_prompt_text(config, x), axis=1)
+
+
+
+    # if hasattr(config.dataset, "preprocess_cols"):
+    #     for col in config.dataset.preprocess_cols:
+    #         train[col] = train[col].apply(lambda x: preprocess_text(x))
+
+
+    # if config.architecture.pooling_type == "CLS":
+    #     train['text'] = train.text.apply(lambda x: f"[SUMMARY_START]{x}[SUMMARY_END]")
+    # # input_cols =  get_input_cols(config=config)
+
+    # train['input_text'] = train.progress_apply(lambda x: get_input_text(x, config), axis=1)
+
+
+    # train_df = pd.DataFrame(columns=train.columns)
+    # valid_df = train[train['fold'] == fold].reset_index(drop=True)
+    # if config.dataset.use_current_data_true_labels:
+    #     train_df = pd.concat([train_df, train[train['fold'] != fold].reset_index(drop=True)], axis=0)
+    
+    # if args.debug:
+    #     logger.info('Debug mode: using only 50 samples')
+    #     train_df = train_df.sample(n=50, random_state=config.general.seed).reset_index(drop=True)
+    #     valid_df = valid_df.sample(n=50, random_state=config.general.seed).reset_index(drop=True)
         
-    logger.info(f'Train shape: {train_df.shape}')
-    logger.info(f'Valid shape: {valid_df.shape}')
+    # logger.info(f'Train shape: {train_df.shape}')
+    # logger.info(f'Valid shape: {valid_df.shape}')
 
-    if config.dataset.set_max_length_from_data:
-        logger.info('Setting max length from data')
-        config.dataset.max_length = get_max_len_from_df(train_df, tokenizer, config)
+    # if config.dataset.set_max_length_from_data:
+    #     logger.info('Setting max length from data')
+    #     config.dataset.max_length = get_max_len_from_df(train_df, tokenizer, config)
         
-    logger.info(f"Max tokenized sequence len: {config.dataset.max_length}")
-    logger.info(f"==================== fold: {fold} training ====================")
+    # logger.info(f"Max tokenized sequence len: {config.dataset.max_length}")
+    # logger.info(f"==================== fold: {fold} training ====================")
 
-    model_checkpoint_path = filepaths['model_checkpoint_fn_path'] if config.architecture.from_checkpoint else None
-    logger.info(f'Using model checkpoint from: {model_checkpoint_path}')
+    # model_checkpoint_path = filepaths['model_checkpoint_fn_path'] if config.architecture.from_checkpoint else None
+    # logger.info(f'Using model checkpoint from: {model_checkpoint_path}')
     
-    if args.debug:
-        config.training.epochs = 1
+    # if args.debug:
+    #     config.training.epochs = 1
         
-    fold_out = train_loop(train_df, valid_df, model_checkpoint_path=model_checkpoint_path)
+    # fold_out = train_loop(train_df, valid_df, model_checkpoint_path=model_checkpoint_path)
         
 
 if __name__ == "__main__":

@@ -38,9 +38,9 @@ class CommonlitDataset(Dataset):
             inputs[k] = torch.tensor(v, dtype=torch.long)
             
             
-        if  self.cfg.training.mask_ratio > 0 and self.mode == "train":
-            ix = torch.rand(size=(len(inputs["input_ids"]),)) < self.cfg.training.mask_ratio # 0.25
-            inputs["input_ids"][ix] = self.mask_token
+        # if  self.cfg.training.mask_ratio > 0 and self.mode == "train":
+        #     ix = torch.rand(size=(len(inputs["input_ids"]),)) < self.cfg.training.mask_ratio # 0.25
+        #     inputs["input_ids"][ix] = self.mask_token
             
         
         if self.labels is not None:
@@ -62,6 +62,52 @@ class CommonlitDataset(Dataset):
         return inputs
 
 
+class CommonlitDatasetInference(Dataset):
+    def __init__(self, cfg, samples, df, mode="train"):
+        self.cfg = cfg
+        self.samples = samples
+        self.df = df
+        self.texts = self.df['input_text'].values
+        self.mask_token = self.cfg.tokenizer.convert_tokens_to_ids(self.cfg.tokenizer.mask_token)
+        self.sep_token = self.cfg.tokenizer.sep_token
+        self.mode = mode
+        self.labels = None
+        if cfg.dataset.target_cols[0] in df.columns and self.mode != "test":
+            self.labels = df[cfg.dataset.target_cols].values
+
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, item):
+
+        inputs = self.samples[item]
+        # print(type(inputs))
+        # print(inputs)
+
+        # text = self.texts[item]   
+        # inputs = self.cfg.tokenizer.encode_plus(
+        #     text,
+        #     return_tensors=None,
+        #     add_special_tokens=True,
+        #     max_length=self.cfg.dataset.max_length,
+        #     # pad_to_max_length=True,
+        #     padding="max_length",
+        #     truncation=True,
+        # )
+        # print(type(inputs))
+        
+        for k, v in inputs.items():
+            inputs[k] = torch.tensor(v, dtype=torch.long)
+    
+        if self.labels is not None:
+            label = torch.tensor(self.labels[item], dtype=torch.float)
+            return inputs, label
+        
+        return inputs
+
+
+
 def get_train_dataloader(cfg, df):
     dataset = CommonlitDataset(cfg, df, mode="train")
     dataloader = torch.utils.data.DataLoader(
@@ -75,6 +121,20 @@ def get_train_dataloader(cfg, df):
     return dataloader
 
 
+# def get_valid_dataloader(cfg, samples, df):
+#     # dataset = CommonlitDataset(cfg, df, mode="val")
+#     dataset = CommonlitDatasetInference(cfg, samples, df, mode="val")
+#     dataloader = torch.utils.data.DataLoader(
+#         dataset,
+#         batch_size=cfg.training.valid_batch_size,
+#         num_workers=cfg.environment.n_workers,
+#         shuffle=False,
+#         pin_memory=True,
+#         drop_last=False,
+#     )
+#     return dataloader
+
+
 def get_valid_dataloader(cfg, df):
     dataset = CommonlitDataset(cfg, df, mode="val")
     dataloader = torch.utils.data.DataLoader(
@@ -86,6 +146,7 @@ def get_valid_dataloader(cfg, df):
         drop_last=False,
     )
     return dataloader
+
 
 
 def get_test_dataloader(cfg, df):

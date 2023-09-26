@@ -146,10 +146,8 @@ contractions = {
 
 
 class Preprocessor:
-    def __init__(self, 
-                model_name: str,
-                ) -> None:
-        self.tokenizer = AutoTokenizer.from_pretrained(f"{model_name}")
+    def __init__(self, tokenizer) -> None:
+        self.tokenizer = tokenizer
         self.STOP_WORDS = set(stopwords.words('english'))
         
         self.spacy_ner_model = spacy.load('en_core_web_sm',)
@@ -286,42 +284,29 @@ class Preprocessor:
         )
         
         # Crate dataframe with count of each category NERs overlap for all the summaries
-        
         input_df['quotes_count'] = input_df.progress_apply(self.quotes_count, axis=1)
-        
         return input_df.drop(columns=["summary_tokens", "prompt_tokens"])
     
 
 
-# get input columns array for training
-def get_input_cols(config):
-    input_cols = []
-    if config.dataset.use_summary_text:
-        input_cols.append('text')
-
-    if config.dataset.use_prompt_title:
-        input_cols.append('prompt_question')
-
-    if config.dataset.use_prompt_question:
-        input_cols.append('prompt_title')
-
-    if config.dataset.use_prompt_text:
-        input_cols.append('prompt_text')
-
-    return input_cols
 
 
-### get input text ofr training
-def get_input_text(row, input_cols, config):
-    sep = " " + config.tokenizer.sep_token + " "        
-    text = sep.join(row[input_cols])
+def split_prompt_text(config, row):
+    text = ""
+    sents = row.prompt_text.split(".")
+    start = sents[:config.dataset.prompt_text_sent_start_count]
+    print(len(sents))
+    # end = sents[config.dataset.prompt_text_sent_end_count:]
+    if len(start) > 0: text += ".".join(start)
+    # if len(end) > 0: text += ' ' + ".".join(start)
     return text
 
 
-
-
-
-
+### get input text ofr training
+def get_input_text(row, config):
+    sep = " " + config.tokenizer.sep_token + " "   
+    text = sep.join(row[config.dataset.input_cols])
+    return text
 
 
 
@@ -377,7 +362,8 @@ def resolve_encodings_and_normalize(text: str) -> str:
 def get_additional_special_tokens():
     special_tokens_replacement = {
         '\n': '[BR]',
-        # 'sp_token1': '[PROMPT_QUESTION]',
+        'sp_token1': '[SUMMARY_START]',
+        'sp_token2': '[SUMMARY_END]',
         # 'sp_token2': '[PROMPT_TITLE]',
         # 'sp_token3': '[PROMPT_TEXT]',
         # 'sp_token4': '[SUMMARY_TEXT]'
@@ -432,15 +418,51 @@ def add_prompt_info(row):
 #     text = replace_special_tokens(text)
 #     return text
 
-def preprocess_text(text, config, type="summary"):
-    text = clean_summary(text) # newly added
+# def preprocess_text(text, config, type="summary"):
+#     text = clean_summary(text) # newly added
 
-    if config.dataset.use_prompt_text and type == "prompt":
-        text = clean_prompts(text) 
+#     if config.dataset.use_prompt_text and type == "prompt":
+#         text = clean_prompts(text) 
 
-    # text = text.replace('\n', '|')
-    text = resolve_encodings_and_normalize(text)
-    text = replace_special_tokens(text)
+#     # text = text.replace('\n', '|')
+#     text = resolve_encodings_and_normalize(text)
+#     text = replace_special_tokens(text)
+#     return text
+
+
+def preprocess_text(text):
+    '''
+    Cleans text into a basic form for NLP. Operations include the following:-
+    1. Remove special charecters like &, #, etc
+    2. Removes extra spaces
+    3. Removes embedded URL links
+    4. Removes HTML tags
+    5. Removes emojis
+
+    text - Text piece to be cleaned.
+    '''
+    template = re.compile(r'https?://\S+|www\.\S+')  # Removes website links
+    text = template.sub(r'', text)
+
+    soup = BeautifulSoup(text, 'lxml')  # Removes HTML tags
+    only_text = soup.get_text()
+    text = only_text
+
+    emoji_pattern = re.compile("["
+                               u"\U0001F600-\U0001F64F"  # emoticons
+                               u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                               u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                               u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                               u"\U00002702-\U000027B0"
+                               u"\U000024C2-\U0001F251"
+                               "]+", flags=re.UNICODE)
+    text = emoji_pattern.sub(r'', text)
+
+    text = re.sub(r"[^a-zA-Z\d]", " ", text) # Remove special Charecters
+    text = re.sub('\n+', '\n', text) 
+    text = re.sub('\.+', '.', text) 
+    text = re.sub(' +', ' ', text) # Remove Extra Spaces 
+
     return text
 
 
