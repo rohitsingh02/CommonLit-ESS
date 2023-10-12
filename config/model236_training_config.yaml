@@ -4,12 +4,8 @@ logging:
         project: 'commonlit'
         group: 'general'
 dataset:
-    preprocess_all: False
-    use_summary_text: True
-    use_prompt_title: False
-    use_prompt_question: False
-    use_prompt_text:  False
-    prompt_text_sent_count: 5
+    preprocess_cols:
+    - text
     use_current_data_true_labels: True
     use_previous_data_pseudo_labels: False
     use_current_data_pseudo_labels: False
@@ -20,14 +16,15 @@ dataset:
     valid_print_frequency: 50
     target_cols: ['content', 'wording']
     n_folds: 4
-    max_length: 1024
-    set_max_length_from_data: True
-    # use_pseudo_targets: 
-    #     version: 'v1'
-    #     type: 'pseudo' # pseudo, mean, mean_diff
-
+    max_length: 1500
+    set_max_length_from_data: False
+    input_cols:
+    - text
+    - prompt_text
+    - prompt_question
+    - prompt_title
 architecture:
-    model_name: 'microsoft/deberta-v3-base' #'microsoft/deberta-v3-base'
+    model_name: 'microsoft/deberta-v3-large' #'microsoft/deberta-v3-base'
     pretrained: True
     from_checkpoint: False
     checkpoint_id: ''
@@ -36,7 +33,8 @@ architecture:
     hidden_dropout_prob: 0.
     attention_dropout: 0.
     attention_probs_dropout_prob: 0.
-    pooling_type: 'MeanPooling' # ['MeanPooling', 'ConcatPooling', 'WeightedLayerPooling', 'GRUPooling', 'LSTMPooling', 'AttentionPooling']
+    pooling_type: 'CLS' # CLS ['MeanPooling', 'ConcatPooling', 'WeightedLayerPooling', 'GRUPooling', 'LSTMPooling', 'AttentionPooling']
+    prompt_pooling: 'CLS'
     gru_pooling:
         hidden_size: 1024
         dropout_rate: 0.1
@@ -55,11 +53,11 @@ architecture:
         hiddendim_fc: 1024
         dropout: 0.1
     concat_pooling:
-        n_layers: 1
-    gradient_checkpointing: False
-    freeze_embeddings: False
-    freeze_n_layers: 0
-    reinitialize_n_layers: 0
+        n_layers: 3
+    gradient_checkpointing: True
+    freeze_embeddings: True
+    freeze_n_layers: 6
+    reinitialize_n_layers: 2
 optimizer:
     use_swa: False
     swa:
@@ -76,7 +74,7 @@ optimizer:
     n_groups: 1
     eps: 1.e-6
     betas: [0.9, 0.999]
-    weight_decay: 0.01
+    weight_decay: 0.001
 scheduler:
     scheduler_type: 'cosine_schedule_with_warmup' # [constant_schedule_with_warmup, linear_schedule_with_warmup, cosine_schedule_with_warmup,polynomial_decay_schedule_with_warmup]
     batch_scheduler: True
@@ -91,26 +89,32 @@ scheduler:
         n_warmup_steps: 0
         power: 1.0
         min_lr: 0.0
-
 adversarial_learning:
     adversarial_lr: 0.0001
     adversarial_eps: 0.005
     adversarial_epoch_start: 99
 
 training:
+    use_swa: True
+    differential_learning_rate: 0.0001
+    differential_learning_rate_layers:
+    - fc
+    learning_rate: 2.0e-05
+    weight_decay: 0.001
+    warmup_epochs: 1
     apex: True
-    epochs: 10
+    epochs: 8
     precision: 16
-    val_check_interval: 2
-    train_batch_size: 4
-    valid_batch_size: 4
+    val_check_interval: 25
+    train_batch_size: 8
+    valid_batch_size: 8
     gpu_count: 1
-    multi_dropout: True
-    gradient_accumulation_steps: 1
+    multi_dropout: False
+    gradient_accumulation_steps: 2
     max_grad_norm: 1000
     unscale: False
-    cutmix_ratio: 0.5
-    mask_ratio: 0.25
+    cutmix_ratio: 0.1
+    mask_ratio: 0.1
     train_print_frequency: 100
     valid_print_frequency: 50
     swa: 
