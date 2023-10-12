@@ -24,20 +24,111 @@ def get_attention_mask(inputs):
 
 
 class MeanPooling(nn.Module):
-    def __init__(self, backbone_config, pooling_config):
+    def __init__(self, backbone_config, config):
         super(MeanPooling, self).__init__()
         self.output_dim = backbone_config.hidden_size
+        self.config = config
 
     def forward(self, inputs, backbone_outputs):
         attention_mask = get_attention_mask(inputs)
         last_hidden_state = get_last_hidden_state(backbone_outputs)
 
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        input_ids = inputs['input_ids'].to(last_hidden_state.device)  # Move input_ids to the same device as last_hidden_state
+        start_token_index = (input_ids == self.config.text_start_token).nonzero()[:, 1]
+        end_token_index = (input_ids == self.config.text_end_token).nonzero()[:, 1]
+        # Create an attention mask based on start and end token indices
+        batch_size, max_seq_len = attention_mask.shape
+        valid_mask = torch.zeros((batch_size, max_seq_len), device=last_hidden_state.device)
+        for i in range(batch_size):
+            valid_mask[i, start_token_index[i]:end_token_index[i] + 1] = 1.0
+
+        input_mask_expanded = valid_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
         sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
         sum_mask = input_mask_expanded.sum(1)
         sum_mask = torch.clamp(sum_mask, min=1e-9)
         mean_embeddings = sum_embeddings / sum_mask
         return mean_embeddings
+    
+
+class ConcatPooling(nn.Module):
+    def __init__(self, backbone_config, config):
+        super(ConcatPooling, self, ).__init__()
+
+        self.config = config
+        pooling_config = config.architecture.concat_pooling
+        self.n_layers = pooling_config.n_layers
+        self.output_dim = backbone_config.hidden_size*pooling_config.n_layers
+        print(pooling_config)
+
+    def forward(self, inputs, backbone_outputs):        
+        all_hidden_states = get_all_hidden_states(backbone_outputs)
+        concatenate_pooling = torch.cat([all_hidden_states[-(i + 1)] for i in range(self.n_layers)], -1)
+        concatenate_pooling = concatenate_pooling[:, 0]
+        return concatenate_pooling
+    
+
+
+class ConcatMeanPooling(nn.Module):
+    def __init__(self, backbone_config, config):
+        super(ConcatMeanPooling, self, ).__init__()
+
+        self.config = config
+        pooling_config = config.architecture.concat_pooling
+        self.n_layers = pooling_config.n_layers
+        # self.output_dim = backbone_config.hidden_size*pooling_config.n_layers
+        self.output_dim = backbone_config.hidden_size
+
+    def forward(self, inputs, backbone_outputs): 
+        attention_mask = get_attention_mask(inputs)
+        all_hidden_states = get_all_hidden_states(backbone_outputs)
+        last_hidden_state = torch.mean(all_hidden_states[-(self.n_layers):], dim=0)
+
+        input_ids = inputs['input_ids'].to(last_hidden_state.device)  # Move input_ids to the same device as last_hidden_state
+        start_token_index = (input_ids == self.config.text_start_token).nonzero()[:, 1]
+        end_token_index = (input_ids == self.config.text_end_token).nonzero()[:, 1]
+        # Create an attention mask based on start and end token indices
+        batch_size, max_seq_len = attention_mask.shape
+        valid_mask = torch.zeros((batch_size, max_seq_len), device=last_hidden_state.device)
+        for i in range(batch_size):
+            valid_mask[i, start_token_index[i]:end_token_index[i] + 1] = 1.0
+
+        input_mask_expanded = valid_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
+        sum_mask = input_mask_expanded.sum(1)
+        sum_mask = torch.clamp(sum_mask, min=1e-9)
+        mean_embeddings = sum_embeddings / sum_mask
+        return mean_embeddings
+
+
+class MeanMaxPooling(nn.Module):
+    def __init__(self, backbone_config, config):
+        super(MeanMaxPooling, self).__init__()
+        self.config = config
+        self.feat_mult = 1
+        self.output_dim = backbone_config.hidden_size*2
+
+    def forward(self, inputs, backbone_outputs):
+        attention_mask = get_attention_mask(inputs)
+        last_hidden_state = get_last_hidden_state(backbone_outputs)
+
+        input_ids = get_input_ids(inputs).to(last_hidden_state.device)  # Move input_ids to the same device as last_hidden_state
+        start_token_index = (input_ids == self.config.text_start_token).nonzero()[:, 1]
+        end_token_index = (input_ids == self.config.text_end_token).nonzero()[:, 1]
+        # Create an attention mask based on start and end token indices
+        batch_size, max_seq_len = attention_mask.shape
+        valid_mask = torch.zeros((batch_size, max_seq_len), device=last_hidden_state.device)
+        for i in range(batch_size):
+            valid_mask[i, start_token_index[i]:end_token_index[i] + 1] = 1.0
+
+        input_mask_expanded = valid_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
+        sum_mask = input_mask_expanded.sum(1)
+        sum_mask = torch.clamp(sum_mask, min=1e-9)
+        mean_embeddings = sum_embeddings / sum_mask
+        max_embeddings, _ = torch.max(last_hidden_state * input_mask_expanded, dim=1)
+        # max_embedding[input_mask_expanded == 0] = -1e4
+        mean_max_embeddings = torch.cat((mean_embeddings, max_embeddings), 1)
+        return mean_max_embeddings
 
 
 class LSTMPooling(nn.Module):
@@ -95,20 +186,6 @@ class WeightedLayerPooling(nn.Module):
         weighted_average = (weight_factor * all_layer_embedding).sum(dim=0) / self.layer_weights.sum()
         return weighted_average[:, 0]
 
-
-class ConcatPooling(nn.Module):
-    def __init__(self, backbone_config, pooling_config):
-        super(ConcatPooling, self, ).__init__()
-
-        self.n_layers = pooling_config.n_layers
-        self.output_dim = backbone_config.hidden_size*pooling_config.n_layers
-        print(pooling_config)
-
-    def forward(self, inputs, backbone_outputs):        
-        all_hidden_states = get_all_hidden_states(backbone_outputs)
-        concatenate_pooling = torch.cat([all_hidden_states[-(i + 1)] for i in range(self.n_layers)], -1)
-        concatenate_pooling = concatenate_pooling[:, 0]
-        return concatenate_pooling
 
 
 class AttentionPooling(nn.Module):
@@ -205,28 +282,6 @@ class WKPooling(nn.Module):
         return output_vector
 
 
-class MeanMaxPooling(nn.Module):
-    def __init__(self, backbone_config, pooling_config):
-        super(MeanMaxPooling, self).__init__()
-        self.feat_mult = 1
-        self.output_dim = backbone_config.hidden_size
-
-    def forward(self, inputs, backbone_outputs):
-        attention_mask = get_attention_mask(inputs)
-        x = get_input_ids(inputs)
-
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(x.size()).float()
-        sum_embeddings = torch.sum(x * input_mask_expanded, 1)
-        sum_mask = input_mask_expanded.sum(1)
-        sum_mask = torch.clamp(sum_mask, min=1e-9)
-        mean_embeddings = sum_embeddings / sum_mask
-
-        embeddings = x.clone()
-        embeddings[input_mask_expanded == 0] = -1e4
-        max_embeddings, _ = torch.max(embeddings, dim=1)
-        mean_max_embeddings = torch.cat((mean_embeddings, max_embeddings), 1)
-
-        return mean_max_embeddings
 
 
 class MaxPooling(nn.Module):
@@ -264,60 +319,75 @@ class MinPooling(nn.Module):
 
 
 
-class GeMText(nn.Module):
-    def __init__(self, backbone_config, pooling_config):
-        super(GeMText, self).__init__()
-
+class GeMPooling(nn.Module):
+    def __init__(self, backbone_config, config):
+        super(GeMPooling, self).__init__()
+        self.config = config
+        pooling_config = config.architecture.gem_pooling
         self.dim = pooling_config.dim
         self.eps = pooling_config.eps
         self.feat_mult = 1
-
         self.p = Parameter(torch.ones(1) * pooling_config.p)
         self.output_dim = backbone_config.hidden_size
 
     def forward(self, inputs, backbone_output):
+        last_hidden_state  = get_last_hidden_state(backbone_output)
         attention_mask = get_attention_mask(inputs)
-        x = get_input_ids(inputs)
 
-        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(x.size()).float()
-        x = (x.clamp(min=self.eps) * attention_mask_expanded).pow(self.p).sum(self.dim)
-        ret = x / attention_mask_expanded.sum(self.dim).clip(min=self.eps)
+        input_ids = get_input_ids(inputs).to(last_hidden_state.device)  # Move input_ids to the same device as last_hidden_state
+        start_token_index = (input_ids == self.config.text_start_token).nonzero()[:, 1]
+        end_token_index = (input_ids == self.config.text_end_token).nonzero()[:, 1]
+        # # Create an attention mask based on start and end token indices
+        batch_size, max_seq_len = attention_mask.shape
+        valid_mask = torch.zeros((batch_size, max_seq_len), device=input_ids.device)
+        for i in range(batch_size):
+            valid_mask[i, start_token_index[i]:end_token_index[i] + 1] = 1.0
+
+        attention_mask_expanded = valid_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        # attention_mask_expanded = attention_mask.unsqueeze(-1).expand(input_ids.size()).float()
+        input_ids = (last_hidden_state.clamp(min=self.eps) * attention_mask_expanded).pow(self.p).sum(self.dim)
+        ret = input_ids / attention_mask_expanded.sum(self.dim).clip(min=self.eps)
         ret = ret.pow(1 / self.p)
         return ret
 
 
 
-class GeMText(nn.Module):
-    def __init__(self, dim=1, p=3, eps=1e-6):
-        super(GeMText, self).__init__()
-        self.dim = dim
-        self.p = Parameter(torch.ones(1) * p)
-        self.eps = eps
+# class GeMText(nn.Module):
+#     def __init__(self, dim=1, p=3, eps=1e-6):
+#         super(GeMText, self).__init__()
+#         self.dim = dim
+#         self.p = Parameter(torch.ones(1) * p)
+#         self.eps = eps
 
-    def forward(self, x, attention_mask):
-        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(x.shape)
-        x = ((x.clamp(min=self.eps) * attention_mask_expanded).pow(self.p)).sum(self.dim)
-        ret = (x/(attention_mask_expanded.sum(self.dim))).clip(min=self.eps)
-        ret = ret.pow(1/self.p)
-        return ret
+#     def forward(self, x, attention_mask):
+#         attention_mask_expanded = attention_mask.unsqueeze(-1).expand(x.shape)
+#         x = ((x.clamp(min=self.eps) * attention_mask_expanded).pow(self.p)).sum(self.dim)
+#         ret = (x/(attention_mask_expanded.sum(self.dim))).clip(min=self.eps)
+#         ret = ret.pow(1/self.p)
+#         return ret
 
 
 
 def get_pooling_layer(config, backbone_config):
     if config.architecture.pooling_type == 'MeanPooling':
-        return MeanPooling(backbone_config, config.architecture.gru_pooling)
-    
+        return MeanPooling(backbone_config, config)
+
+    elif config.architecture.pooling_type == 'ConcatMeanPooling':
+        return ConcatMeanPooling(backbone_config, config)
+
+    elif config.architecture.pooling_type == 'MeanMaxPooling':
+        return MeanMaxPooling(backbone_config, config)
+
+
     elif config.architecture.pooling_type == 'MinPooling':
         return MinPooling(backbone_config, config.architecture.gru_pooling)
     
     elif config.architecture.pooling_type == 'MaxPooling':
         return MaxPooling(backbone_config, config.architecture.gru_pooling)
     
-    elif config.architecture.pooling_type == 'MeanMaxPooling':
-        return MeanMaxPooling(backbone_config, config.architecture.gru_pooling)
-    
+
     elif config.architecture.pooling_type == 'GeMPooling':
-        return GeMText(backbone_config, config.architecture.gem_pooling)
+        return GeMPooling(backbone_config, config)
     
     elif config.architecture.pooling_type == 'GRUPooling':
         return LSTMPooling(backbone_config, config.architecture.gru_pooling, is_lstm=False)
@@ -332,7 +402,7 @@ def get_pooling_layer(config, backbone_config):
         return WKPooling(backbone_config, config.architecture.wk_pooling)
 
     elif config.architecture.pooling_type == 'ConcatPooling':
-        return ConcatPooling(backbone_config, config.architecture.concat_pooling)
+        return ConcatPooling(backbone_config, config)
 
     elif config.architecture.pooling_type == 'AttentionPooling':
         return AttentionPooling(backbone_config, config.architecture.attention_pooling)

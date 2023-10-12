@@ -28,8 +28,6 @@ class CustomModel(nn.Module):
         
         
         self.pool = get_pooling_layer(cfg, backbone_config)
-
-
         self.fc = nn.Linear(self.pool.output_dim, len(self.cfg.dataset.target_cols))
 
         if 'bart' in cfg.architecture.model_name:
@@ -71,6 +69,18 @@ class CustomModel(nn.Module):
 
 
 
+def create_attention_masks(input_ids, config):
+    attention_masks = torch.zeros_like(input_ids)
+    for i, input_id in enumerate(input_ids):
+        start_idx = (input_id == config.prompt_start_token).nonzero()
+        end_idx = (input_id == config.prompt_end_token).nonzero()
+        if start_idx.numel() > 0 and end_idx.numel() > 0:
+            start_idx, end_idx = start_idx[0, 1], end_idx[0, 1]
+            attention_masks[i, start_idx:end_idx + 1] = 1
+    return attention_masks
+
+
+
 class CustomModel2(nn.Module):
     def __init__(self, cfg, backbone_config):
         super().__init__()
@@ -100,9 +110,7 @@ class CustomModel2(nn.Module):
             self.dropout5 = nn.Dropout(0.5)
         
         
-        # self.pool = get_pooling_layer(cfg, backbone_config)
         self.fc = nn.Linear(self.backbone_config.hidden_size, len(self.cfg.dataset.target_cols))
-
         if 'bart' in cfg.architecture.model_name:
             self.initializer_range = self.backbone_config.init_std
         else:
@@ -124,8 +132,12 @@ class CustomModel2(nn.Module):
             module.weight.data.fill_(1.0)
 
     def forward(self, inputs):
-        outputs = self.backbone(**inputs).last_hidden_state
-        # feature = self.pool(inputs, outputs)
+        input_ids = inputs['input_ids']
+        if hasattr(self.cfg.architecture, "use_attention_mask"):
+            attention_masks = create_attention_masks(input_ids, self.cfg)
+            outputs = self.backbone(input_ids=input_ids, attention_mask=attention_masks).last_hidden_state
+        else:
+            outputs = self.backbone(**inputs).last_hidden_state
         
         if hasattr(self.cfg.training, "multi_dropout") and self.cfg.training.multi_dropout:
             feature = self.dropout(outputs)
@@ -140,11 +152,3 @@ class CustomModel2(nn.Module):
             output = self.fc(outputs)
         return output
     
-
-
-
-
-
-
-
-

@@ -2,21 +2,13 @@ import codecs
 from text_unidecode import unidecode
 from typing import Tuple
 import re
-from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from sklearn.model_selection import GroupKFold
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 import pandas as pd
-from transformers import AutoModel, AutoTokenizer
 from typing import List
 from collections import Counter
-
-import nltk
-from autocorrect import Speller
-from spellchecker import SpellChecker
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from nltk.tokenize.treebank import TreebankWordDetokenizer
 
 import spacy
 from tqdm import tqdm
@@ -143,15 +135,11 @@ contractions = {
 "you've": "you have"
 }
 
-
-
 class Preprocessor:
     def __init__(self, tokenizer) -> None:
         self.tokenizer = tokenizer
         self.STOP_WORDS = set(stopwords.words('english'))
-        
         self.spacy_ner_model = spacy.load('en_core_web_sm',)
-        self.speller = SpellChecker() #Speller(lang='en')
         
     def count_text_length(self, df: pd.DataFrame, col:str) -> pd.Series:
         """ text length """
@@ -188,11 +176,6 @@ class Preprocessor:
         # Calculate the number of common n-grams
         common_ngrams = original_ngrams.intersection(summary_ngrams)
 
-        # # Optionally, you can get the frequency of common n-grams for a more nuanced analysis
-        # original_ngram_freq = Counter(ngrams(original_words, n))
-        # summary_ngram_freq = Counter(ngrams(summary_words, n))
-        # common_ngram_freq = {ngram: min(original_ngram_freq[ngram], summary_ngram_freq[ngram]) for ngram in common_ngrams}
-
         return len(common_ngrams)
     
     def ner_overlap_count(self, row, mode:str):
@@ -215,7 +198,6 @@ class Preprocessor:
         summary_ner = clean_ners(summary_ner)
 
         intersecting_ners = prompt_ner.intersection(summary_ner)
-        
         ner_dict = dict(Counter([ner[1] for ner in intersecting_ners]))
         
         if mode == "train":
@@ -233,12 +215,6 @@ class Preprocessor:
         else:
             return 0
 
-    def spelling(self, text):
-        
-        wordlist=text.split()
-        amount_miss = len(list(self.speller.unknown(wordlist)))
-
-        return amount_miss
     
     def run(self, 
             prompts: pd.DataFrame,
@@ -267,8 +243,6 @@ class Preprocessor:
             )
 
         )
-        summaries["splling_err_num"] = summaries["text"].progress_apply(self.spelling)
-
         # merge prompts and summaries
         input_df = summaries.merge(prompts, how="left", on="prompt_id")
 
@@ -285,22 +259,9 @@ class Preprocessor:
         
         # Crate dataframe with count of each category NERs overlap for all the summaries
         input_df['quotes_count'] = input_df.progress_apply(self.quotes_count, axis=1)
+        
         return input_df.drop(columns=["summary_tokens", "prompt_tokens"])
     
-
-
-
-
-def split_prompt_text(config, row):
-    text = ""
-    sents = row.prompt_text.split(".")
-    start = sents[:config.dataset.prompt_text_sent_start_count]
-    print(len(sents))
-    # end = sents[config.dataset.prompt_text_sent_end_count:]
-    if len(start) > 0: text += ".".join(start)
-    # if len(end) > 0: text += ' ' + ".".join(start)
-    return text
-
 
 ### get input text ofr training
 def get_input_text(row, config):
@@ -309,21 +270,10 @@ def get_input_text(row, config):
     return text
 
 
-
-
-
 def clean_summary(summary):
     for word in summary.split():
         if word.lower() in contractions:
             summary = summary.replace(word, contractions[word.lower()])
-    # Add space after punctuations
-    # clean_summary = summary.replace("\n", "[BR]")
-    # Remove HTML tags using BeautifulSoup
-    # clean_summary = BeautifulSoup(clean_summary, "html.parser").get_text()
-    # Remove special characters and non-printable characters
-    # clean_summary = re.sub(r'[^A-Za-z0-9\s]', ' ', clean_summary)
-    # Remove extra spaces and newlines
-    # clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()
     return summary
 
 
@@ -364,27 +314,6 @@ def get_additional_special_tokens():
         '\n': '[BR]',
         'sp_token1': '[SUMMARY_START]',
         'sp_token2': '[SUMMARY_END]',
-        # 'sp_token2': '[PROMPT_TITLE]',
-        # 'sp_token3': '[PROMPT_TEXT]',
-        # 'sp_token4': '[SUMMARY_TEXT]'
-        
-        
-        # 'Generic_School': '[GENERIC_SCHOOL]',
-        # 'Generic_school': '[GENERIC_SCHOOL]',
-        # 'SCHOOL_NAME': '[SCHOOL_NAME]',
-        # 'STUDENT_NAME': '[STUDENT_NAME]',
-        # 'Generic_Name': '[GENERIC_NAME]',
-        # 'Genric_Name': '[GENERIC_NAME]',
-        # 'Generic_City': '[GENERIC_CITY]',
-        # 'LOCATION_NAME': '[LOCATION_NAME]',
-        # 'HOTEL_NAME': '[HOTEL_NAME]',
-        # 'LANGUAGE_NAME': '[LANGUAGE_NAME]',
-        # 'PROPER_NAME': '[PROPER_NAME]',
-        # 'OTHER_NAME': '[OTHER_NAME]',
-        # 'PROEPR_NAME': '[PROPER_NAME]',
-        # 'RESTAURANT_NAME': '[RESTAURANT_NAME]',
-        # 'STORE_NAME': '[STORE_NAME]',
-        # 'TEACHER_NAME': '[TEACHER_NAME]',
     }
     return special_tokens_replacement
 
@@ -411,25 +340,6 @@ def add_prompt_info(row):
     return text    
 
 
-# def preprocess_text(text):
-#     text = clean_summary(text) # newly added
-#     # text = text.replace('\n', '|')
-#     text = resolve_encodings_and_normalize(text)
-#     text = replace_special_tokens(text)
-#     return text
-
-# def preprocess_text(text, config, type="summary"):
-#     text = clean_summary(text) # newly added
-
-#     if config.dataset.use_prompt_text and type == "prompt":
-#         text = clean_prompts(text) 
-
-#     # text = text.replace('\n', '|')
-#     text = resolve_encodings_and_normalize(text)
-#     text = replace_special_tokens(text)
-#     return text
-
-
 def preprocess_text(text):
     '''
     Cleans text into a basic form for NLP. Operations include the following:-
@@ -441,12 +351,16 @@ def preprocess_text(text):
 
     text - Text piece to be cleaned.
     '''
-    template = re.compile(r'https?://\S+|www\.\S+')  # Removes website links
-    text = template.sub(r'', text)
+    # template = re.compile(r'https?://\S+|www\.\S+')  # Removes website links
+    # text = template.sub(r'', text)
 
     soup = BeautifulSoup(text, 'lxml')  # Removes HTML tags
     only_text = soup.get_text()
     text = only_text
+
+    for word in text.split():
+        if word.lower() in contractions:
+            text = text.replace(word, contractions[word.lower()])
 
     emoji_pattern = re.compile("["
                                u"\U0001F600-\U0001F64F"  # emoticons
@@ -458,13 +372,36 @@ def preprocess_text(text):
                                "]+", flags=re.UNICODE)
     text = emoji_pattern.sub(r'', text)
 
-    text = re.sub(r"[^a-zA-Z\d]", " ", text) # Remove special Charecters
-    text = re.sub('\n+', '\n', text) 
-    text = re.sub('\.+', '.', text) 
-    text = re.sub(' +', ' ', text) # Remove Extra Spaces 
+    # text = re.sub(r"[^a-zA-Z\d]", " ", text) # Remove special Charecters
+    # text = re.sub('\n+', '\n', text) 
+    # text = re.sub('\.+', '.', text) 
+    # text = re.sub(' +', ' ', text) # Remove Extra Spaces 
 
+    # text = resolve_encodings_and_normalize(text)
+    text = replace_special_tokens(text)
     return text
 
+
+
+def split_prompt_text(config, row):
+    text = ""
+    sents = row.prompt_text.split(".")
+    start = sents[:config.dataset.prompt_text_sent_count]
+    if len(start) > 0: text += ". ".join(start)
+    return text
+
+
+
+def process_prompt_text(row, type="even"):
+    text = ""
+    sents = row.prompt_text.split(".")
+    if type == "even":
+        sents = [sent for index, sent in enumerate(sents) if index%2==0 ]
+    else:
+        sents = [sent for index, sent in enumerate(sents) if index%2!=0 ]
+
+    text += ".".join(sents)
+    return text.strip()
 
 
 def make_folds(df, target_cols, n_splits):
@@ -475,41 +412,7 @@ def make_folds(df, target_cols, n_splits):
     return df
 
 
-
-
-def add_extra_text(df, config):
-    text = df.text
-    if config.dataset.use_prompt_title: 
-        text += "[SEP]" + df.prompt_title
-    if config.dataset.use_prompt_question: 
-        text += "[SEP]" + df.prompt_question
-    if config.dataset.use_prompt_text: 
-        prompt_sents = df.prompt_text.split(".")
-        if len(prompt_sents) > config.dataset.prompt_text_sent_count:
-            prompt_text = ". ".join(prompt_sents[:config.dataset.prompt_text_sent_count])
-        else:
-            prompt_text = df.prompt_text
-        text += "[SEP]" + prompt_text
-
-    text = text.strip()
-    return text
-
-
-# def get_max_len_from_df(df, tokenizer, config, n_special_tokens=3):
-#     tmp_df = df.copy()
-#     tmp_df['input_text'] = tmp_df.apply(lambda x: add_extra_text(x, config=config), axis=1)
-
-#     lengths = []
-#     tk0 = tqdm(tmp_df['text'].fillna("").values, total=len(df))
-#     for text in tk0:
-#         length = len(tokenizer(text, add_special_tokens=False)['input_ids'])
-#         lengths.append(length)
-#     max_length = max(lengths) + n_special_tokens
-#     return max_length
-
-
-
-def get_max_len_from_df(df, tokenizer, text_sent_count=5,  n_special_tokens=3):
+def get_max_len_from_df(df, tokenizer, n_special_tokens=3):
     lengths = []
     tk0 = tqdm(df['input_text'].fillna("").values, total=len(df))
     for text in tk0:

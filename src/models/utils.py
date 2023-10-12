@@ -42,7 +42,7 @@ def get_model(config, backbone_config_path=None, model_checkpoint_path=None, tra
     if config.architecture.pooling_type == "CLS":
         model = CustomModel2(config, backbone_config=backbone_config)
     else:
-        model = CustomModel2(config, backbone_config=backbone_config)
+        model = CustomModel(config, backbone_config=backbone_config)
 
     if model_checkpoint_path is not None:
         state = torch.load(model_checkpoint_path, map_location='cpu')['state_dict']

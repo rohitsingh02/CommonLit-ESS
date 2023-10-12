@@ -19,9 +19,6 @@ from tqdm import tqdm
 from transformers import (
     AutoTokenizer
 )
-import copy
-import multiprocessing
-from torch_ema import ExponentialMovingAverage
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -32,17 +29,15 @@ import torch.nn as nn
 import torch.utils.checkpoint
 import torch.multiprocessing
 import re
-from torch.utils.data import DataLoader
-from torch.optim.swa_utils import AveragedModel, SWALR
 
 from utils import load_filepaths
-from utils import get_config, dictionary_to_namespace, get_logger, save_config, update_filepaths
+from utils import get_config, dictionary_to_namespace, get_logger, update_filepaths
 from utils import str_to_bool, create_dirs_if_not_exists
 from utils import AverageMeter, time_since, get_evaluation_steps
 from utils import time_since
 from criterion.score import get_score, get_score_single
 from data.preprocessing import Preprocessor, make_folds, get_max_len_from_df, get_additional_special_tokens, preprocess_text, add_prompt_info
-from data.preprocessing import get_input_text, split_prompt_text
+from data.preprocessing import get_input_text, split_prompt_text, process_prompt_text
 
 from dataset.datasets import get_train_dataloader, get_valid_dataloader
 from dataset.collators import collate
@@ -64,8 +59,6 @@ fold_score_dict_swa = {
     2: 0.5,
     3: 0.6
 }
-
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -96,9 +89,7 @@ def check_arguments():
         logger.warning('Both use_current_data_pseudo_labels and use_current_data_true_labels are True. ')
 
     
-
-
-def valid_fn(valid_loader, model, criterion, epoch, ema):    
+def valid_fn(valid_loader, model, criterion, epoch):    
     
     valid_losses = utils.AverageMeter()
     model.eval()
@@ -107,25 +98,16 @@ def valid_fn(valid_loader, model, criterion, epoch, ema):
     
     bar=tqdm(enumerate(valid_loader),total=len(valid_loader))
     
-    valid_labels = []
     for step, (inputs, labels) in bar:
         inputs = collate(inputs)
-        
         for k, v in inputs.items():
             inputs[k] = v.to(device)
             
         labels = labels.to(device)
         batch_size = labels.size(0)
-        if config.dataset.input_cols[0] == "text":
-            pred_indexes_start = 1
 
         with torch.no_grad(): 
-            if hasattr(config.training, "ema"):
-                with ema.average_parameters():
-                    y_preds = model(inputs)
-            else:
-                y_preds = model(inputs)
-
+            y_preds = model(inputs)
             input_ids = inputs['input_ids']
             if config.architecture.pooling_type == "CLS":
                 # Find the positions of start and end tokens
@@ -134,29 +116,26 @@ def valid_fn(valid_loader, model, criterion, epoch, ema):
                 mask = torch.arange(input_ids.size(1)).expand(input_ids.size(0), -1).to(input_ids.device)
                 mask = (mask >= start_tokens.unsqueeze(1)) & (mask <= end_tokens.unsqueeze(1))
                 masked_y_preds = y_preds * mask.unsqueeze(2).float()
-                y_preds = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
-            # preds.append(y_preds.to('cpu').numpy())
-            # if config.architecture.pooling_type == "CLS":
-            #     sample_pred = y_preds
-            #     for index, sample in enumerate(inputs["input_ids"]):
-            #         # pred_indexes_start = [i for i, k in enumerate(sample) if k == config.text_start_token][0]
-            #         pred_indexes_end = [i for i, k in enumerate(sample) if k == config.text_end_token][0]
-            #         x = y_preds[index, pred_indexes_start:pred_indexes_end+1, :]
-            #         y_preds[index,:,:] =  torch.div(torch.sum(x, dim=0), x.shape[0]) # (y_preds[index][pred_indexes_start, :] + y_preds[index][pred_indexes_end+1, :]) / 2
-                
-            #     y_preds = torch.mean(y_preds, dim=1)
-
+                y_preds_text = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
+                if hasattr(config.dataset, "prompt_pooling"):
+                    start_tokens = (input_ids == config.prompt_start_token).nonzero()[:, 1]
+                    end_tokens = (input_ids == config.prompt_end_token).nonzero()[:, 1]
+                    mask = torch.arange(input_ids.size(1)).expand(input_ids.size(0), -1).to(input_ids.device)
+                    mask = (mask >= start_tokens.unsqueeze(1)) & (mask <= end_tokens.unsqueeze(1))
+                    masked_y_preds = y_preds * mask.unsqueeze(2).float()
+                    y_preds_prompt = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
+                    y_preds_text = 0.8*y_preds_text + 0.2*y_preds_prompt
+                y_preds = y_preds_text
 
             loss = criterion(y_preds, labels)
+            if config.criterion.criterion_type == "MixLoss":
+                c2 = nn.MSELoss()
+                loss = 0.5*loss + 0.5*c2(y_preds, labels)
 
         if config.training.gradient_accumulation_steps > 1:
             loss = loss / config.training.gradient_accumulation_steps
                
         valid_losses.update(loss.item(), batch_size)   
-
-        # if config.architecture.pooling_type == "CLS":
-        #     predictions.append(y_preds[:, 1].detach().cpu().numpy())  
-        # else:
         predictions.append(y_preds.detach().cpu().numpy())  
         bar.set_postfix(loss=valid_losses.avg)
         
@@ -173,6 +152,7 @@ def valid_fn(valid_loader, model, criterion, epoch, ema):
             wandb.log({f"Validation loss": valid_losses.val})
 
     predictions = np.concatenate(predictions)
+    # model.train()
     return valid_losses, predictions
 
 
@@ -187,7 +167,6 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
     model = get_model(config, model_checkpoint_path=model_checkpoint_path)
     torch.save(model.backbone_config, filepaths['backbone_config_fn_path'])
     model.to(device)
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.995)
     
     optimizer = get_optimizer(model, config)
     train_steps_per_epoch = int(len(train_folds) / config.training.train_batch_size)
@@ -238,8 +217,6 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                     inputs["input_ids"][:,start:start+rand_len]=inputs["input_ids"][perm,start:start+rand_len]
                     inputs["attention_mask"][:,start:start+rand_len]=inputs["attention_mask"][perm,start:start+rand_len]
                     labels[:] = (labels[:] + labels[perm]) / 2
-                    # print(labels)
-                    
                     # labels[:,start:start+rand_len]=labels[perm,start:start+rand_len]
                                 
             with torch.cuda.amp.autocast(enabled=config.training.apex):
@@ -252,21 +229,24 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                     mask = torch.arange(input_ids.size(1)).expand(input_ids.size(0), -1).to(input_ids.device)
                     mask = (mask >= start_tokens.unsqueeze(1)) & (mask <= end_tokens.unsqueeze(1))
                     masked_y_preds = y_preds * mask.unsqueeze(2).float()
-                    y_preds = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
-                loss = criterion(y_preds, labels)
+                    y_preds_text = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
 
-                # if config.architecture.pooling_type == "CLS":
-                #     sample_pred = y_preds
-                #     for index, sample in enumerate(inputs["input_ids"]):
-                #         pred_indexes_start = [i for i, k in enumerate(sample) if k == config.text_start_token][0]
-                #         pred_indexes_end = [i for i, k in enumerate(sample) if k == config.text_end_token][0]
-                #         x = y_preds[index, pred_indexes_start:pred_indexes_end+1, :]
-                #         sample_pred[index,:,:] =  torch.div(torch.sum(x, dim=0), x.shape[0]) # (y_preds[index][pred_indexes_start, :] + y_preds[index][pred_indexes_end+1, :]) / 2
-                    
-                #     sample_pred = torch.mean(sample_pred, dim=1)
-                #     loss = criterion(sample_pred, labels)
-                # else:
-                #     loss = criterion(y_preds, labels)
+                    if hasattr(config.dataset, "prompt_pooling"):
+                        start_tokens = (input_ids == config.prompt_start_token).nonzero()[:, 1]
+                        end_tokens = (input_ids == config.prompt_end_token).nonzero()[:, 1]
+                        mask = torch.arange(input_ids.size(1)).expand(input_ids.size(0), -1).to(input_ids.device)
+                        mask = (mask >= start_tokens.unsqueeze(1)) & (mask <= end_tokens.unsqueeze(1))
+                        masked_y_preds = y_preds * mask.unsqueeze(2).float()
+                        y_preds_prompt = masked_y_preds.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
+                        y_preds_text = 0.75*y_preds_text + 0.25*y_preds_prompt
+
+                    y_preds = y_preds_text
+
+
+                loss = criterion(y_preds, labels)
+                if config.criterion.criterion_type == "MixLoss":
+                    c2 = nn.MSELoss()
+                    loss = 0.5*loss + 0.5*c2(y_preds, labels)
 
             if config.training.gradient_accumulation_steps > 1:
                 loss = loss / config.training.gradient_accumulation_steps
@@ -291,9 +271,6 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                 if config.scheduler.batch_scheduler:
                     scheduler.step()
                     
-                if hasattr(config.training, "ema"):
-                    ema.update()
-                    
             end = time.time()  
             
             if step % config.training.train_print_frequency == 0 or \
@@ -308,35 +285,32 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                             f'Grad: {grad_norm:.4f}  '
                             f'LR: {scheduler.get_lr()[0]:.8f}  ')
                 
-                
                 if (step + 1) in eval_steps:
                     print(eval_steps)
-                    valid_losses, predictions = valid_fn(valid_dataloader, model, criterion, epoch, ema)
+                    valid_losses, predictions = valid_fn(valid_dataloader, model, criterion, epoch)
                     
                     if len(config.dataset.target_cols) > 1:
                         score, scores = get_score(valid_labels, predictions)
                     else:
                         score, scores = get_score_single(valid_labels, predictions)
                                                     
-                    model.train()
                     logger.info(f'Epoch {epoch+1} - Score: {score:.4f}  Scores: {scores}')
-                    if score < best_score:
-                        best_score = score
-                        if score <= fold_score_dict_swa[fold]: 
-                            model_save_pth = filepaths['run_dir_path'] + f"/fold{fold}/" + f"{filepaths['model_fn_path'].split('/')[-1]}"
-                            torch.save({'state_dict': model.state_dict()}, model_save_pth)
-                            logger.info(f'\nEpoch {epoch + 1} - Save Best Score: {best_score:.4f} Model\n')
 
+                    if score < best_score: 
+                        best_score = score
+                        logger.info(f'\nEpoch {epoch + 1} - Save Best Score: {best_score:.4f} Model Normal\n')
                         torch.save({'state_dict': model.state_dict()}, filepaths['model_fn_path'])
-                    
-                    if config.training.use_swa:
+
+
+                    if config.training.use_swa and epoch >= 0:
                         if score <= fold_score_dict_swa[fold]: 
-                            swa_pth = filepaths['run_dir_path'] + f"/fold{fold}" + f"/{filepaths['model_fn_path'].split('/')[-1].split('.pth')[0]}_{epoch}_{step}.pth"
+                            swa_pth = filepaths['run_dir_path'] + f"/fold{fold}" + f"/{filepaths['model_fn_path'].split('/')[-1].split('.pth')[0]}_{epoch}_{step}_{score}.pth"
                             torch.save(
                                 {'state_dict': model.state_dict()},
                                 f"{swa_pth}"
                             )
-
+                    model.train()
+                    
                     unique_parameters = ['.'.join(name.split('.')[:4]) for name, _ in model.named_parameters()]
                     learning_rates = list(set(zip(unique_parameters, scheduler.get_lr())))
                     
@@ -359,26 +333,30 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
                 
 
             bar.set_postfix({'train_loss': train_losses.avg}) 
-        
-        # if epoch >= 6:
-        #     break
-        
-        valid_losses, predictions = valid_fn(valid_dataloader, model, criterion, epoch, ema)
-        
+
+
+        valid_losses, predictions = valid_fn(valid_dataloader, model, criterion, epoch)
         if len(config.dataset.target_cols) > 1:
             score, scores = get_score(valid_labels, predictions)
         else:
             score, scores = get_score_single(valid_labels, predictions)
         
-        model.train()
         logger.info(f'Epoch {epoch+1} - Score: {score:.4f}  Scores: {scores}')
-        if score < best_score:
+
+        if score < best_score: 
             best_score = score
-            if score <= fold_score_dict_swa[fold]:         
-                model_save_pth = filepaths['run_dir_path'] + f"/fold{fold}/" + f"{filepaths['model_fn_path'].split('/')[-1]}"
-                torch.save({'state_dict': model.state_dict()}, model_save_pth)
-                logger.info(f'\nEpoch {epoch + 1} - Save Best Score: {best_score:.4f} Model\n')
-                
+            logger.info(f'\nEpoch {epoch + 1} - Save Best Score: {best_score:.4f} Model\n')
+            torch.save({'state_dict': model.state_dict()}, filepaths['model_fn_path'])
+
+
+        if (config.training.use_swa and epoch >= 0) and (score <= fold_score_dict_swa[fold]):
+            swa_pth = filepaths['run_dir_path'] + f"/fold{fold}" + f"/{filepaths['model_fn_path'].split('/')[-1].split('.pth')[0]}_{epoch}_{step}_{score}.pth"
+            torch.save(
+                {'state_dict': model.state_dict()},
+                f"{swa_pth}"
+            )
+        model.train()
+
 
         elapsed = time.time() - start_time
         logger.info(f'Epoch {epoch + 1} - avg_train_loss: {train_losses.avg:.4f} '
@@ -388,7 +366,8 @@ def train_loop(train_folds, valid_folds, model_checkpoint_path=None):
         
         
     fold_path = filepaths['run_dir_path'] + f"/fold{fold}"
-    average_checkpoints(fold_path, filepaths['model_fn_path'])
+    avg_save_pth = filepaths['model_fn_path'].split(".pth")[0] + "_avg.pth" 
+    average_checkpoints(fold_path, avg_save_pth)
     # logger.info(f'\n Final fold {fold} Score SWA - Save Best Score: {best_score:.4f} Model\n')
     shutil.rmtree(fold_path)
 
@@ -403,16 +382,11 @@ def main():
     train = pd.read_csv(filepaths['TRAIN_FOLDS_CSV_PATH'])
     train_prompt = pd.read_csv(filepaths['TRAIN_PROMPT_CSV_PATH'])
     
-    # train = train.merge(
-    #     train_prompt, 
-    #     on='prompt_id'
-    # ).reset_index(drop=True)
-    
     train = make_folds(train,
             target_cols=config.dataset.target_cols,
             n_splits=config.dataset.n_folds,
     )
-    # train.to_csv("train_folds.csv", index=False)
+    train.to_csv("../data/raw/train_folds.csv", index=False)
     
     special_tokens_replacement = get_additional_special_tokens()
     all_special_tokens = list(special_tokens_replacement.values())
@@ -428,8 +402,12 @@ def main():
     config.text_start_token = tokenizer.convert_tokens_to_ids("[SUMMARY_START]")
     config.text_end_token = tokenizer.convert_tokens_to_ids("[SUMMARY_END]")
 
-    print(config.text_start_token, config.text_end_token)
+    if hasattr(config.dataset, "prompt_pooling"):
+        config.prompt_start_token = tokenizer.convert_tokens_to_ids("[PROMPT_START]")
+        config.prompt_end_token = tokenizer.convert_tokens_to_ids("[PROMPT_END]")
 
+
+    print(config.text_start_token, config.text_end_token)
 
 
     ### new code to test model_performance  
@@ -441,39 +419,33 @@ def main():
         train = pd.read_csv("../data/raw/train_folds_processed.csv")
     
 
-    # if hasattr(config.dataset, "use_pseudo_targets"):
-    #     if config.dataset.use_pseudo_targets.version == "v1":
-    #         df_pseudo = pd.read_csv("../data/raw/pseudo_lgbm1.csv")
-    #     elif config.dataset.use_pseudo_targets.version == "v2":
-    #         df_pseudo = pd.read_csv("../data/raw/pseudo1.csv")
-
-    #     df_pseudo = df_pseudo[['student_id', 'content_pred', 'wording_pred']].reset_index(drop=True)
-    #     train = train.merge(
-    #         df_pseudo, 
-    #         on='student_id'
-    #     ).reset_index(drop=True)
+    if hasattr(config.dataset, "use_pseudo_targets"):
+        if config.dataset.use_pseudo_targets.version == "v1":
+            df_pseudo = pd.read_csv("../../data/oofs/model236.csv")
+            df_pseudo.rename(columns={'content':'content_pred', 'wording': 'wording_pred'}, inplace=True)
+        df_pseudo = df_pseudo[['student_id', 'content_pred', 'wording_pred']].reset_index(drop=True)
+        train = train.merge(
+            df_pseudo, 
+            on='student_id'
+        ).reset_index(drop=True)
 
 
-    if hasattr(config.dataset, "prompt_text_sent_end_count"):
-        train_prompt['prompt_text'] = train_prompt.apply(lambda x: split_prompt_text(config, x), axis=1)
 
+    if hasattr(config.dataset, "prompt_text_seq"):
+        train['prompt_text'] = train.apply(lambda x: process_prompt_text(x, config, type=config.dataset.prompt_text_seq), axis=1)
 
-    # if hasattr(config.dataset, "preprocess_all") and config.dataset.preprocess_all:
-    #     train['text'] = train['text'].apply(lambda x: preprocess_text(x, config, type="summary"))
-    #     train['prompt_question'] = train['prompt_question'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-    #     train['prompt_title'] = train['prompt_title'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-    #     train['prompt_text'] = train['prompt_text'].apply(lambda x: preprocess_text(x, config, type="prompt"))
-
+    if hasattr(config.dataset, "prompt_text_sent_count") and config.dataset.prompt_text_sent_count > 1:
+        train['prompt_text'] = train.apply(lambda x: split_prompt_text(config, x), axis=1)
 
     if hasattr(config.dataset, "preprocess_cols"):
         for col in config.dataset.preprocess_cols:
             train[col] = train[col].apply(lambda x: preprocess_text(x))
 
 
-    if config.architecture.pooling_type == "CLS":
-        train['text'] = train.text.apply(lambda x: f"[SUMMARY_START]{x}[SUMMARY_END]")
-    # input_cols =  get_input_cols(config=config)
-
+    # if config.architecture.pooling_type == "CLS":
+    train['text'] = train.text.apply(lambda x: f"[SUMMARY_START]{x}[SUMMARY_END]")
+    if hasattr(config.dataset, "prompt_pooling"):
+        train['prompt_text'] = train.prompt_text.apply(lambda x: f"[PROMPT_START]{x}[PROMPT_END]")
     train['input_text'] = train.progress_apply(lambda x: get_input_text(x, config), axis=1)
 
 
@@ -481,6 +453,11 @@ def main():
     valid_df = train[train['fold'] == fold].reset_index(drop=True)
     if config.dataset.use_current_data_true_labels:
         train_df = pd.concat([train_df, train[train['fold'] != fold].reset_index(drop=True)], axis=0)
+        if hasattr(config.training, "full_fit"):
+            train_df = train.reset_index(drop=True)
+
+    print("DF Shape", train_df.shape)
+    # exit()
     
     if args.debug:
         logger.info('Debug mode: using only 50 samples')
@@ -512,9 +489,6 @@ if __name__ == "__main__":
     config_path = os.path.join(filepaths['CONFIGS_DIR_PATH'], args.config_name)
     config = get_config(config_path)
     fold = args.fold
-    
-    # if args.use_wandb: 
-    #     run = init_wandb()
         
     filepaths = update_filepaths(filepaths, config, args.run_id, fold)  
     create_dirs_if_not_exists(filepaths)

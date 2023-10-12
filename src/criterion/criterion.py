@@ -31,7 +31,7 @@ class MCRMSELoss(nn.Module):
     def forward(self, yhat, y):
         score = 0
         for i, w in enumerate(self.weights):
-            score += self.rmse(yhat[:, :, i], y[:, :, i]) * w
+            score += self.rmse(yhat[:, i], y[:, i]) * w
         return score
 
 
